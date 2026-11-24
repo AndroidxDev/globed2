@@ -74,23 +74,95 @@ jobs:
           assert old in src, 'Expected AL_EXPORT_MEMBER macros not found in EventDefine.hpp'
 
           new = textwrap.dedent(r"""
+              #ifndef AL_EVENT_DEFINE_HELPERS_DEFINED
+              #define AL_EVENT_DEFINE_HELPERS_DEFINED
+              #include <type_traits>
+
+              namespace async_load_event_detail {
+                  template <typename Dst, bool Const, bool Volatile>
+                  struct ApplyCv { using type = Dst; };
+                  template <typename Dst>
+                  struct ApplyCv<Dst, true, false> { using type = const Dst; };
+                  template <typename Dst>
+                  struct ApplyCv<Dst, false, true> { using type = volatile Dst; };
+                  template <typename Dst>
+                  struct ApplyCv<Dst, true, true> { using type = const volatile Dst; };
+
+                  template <typename R, typename... Args>
+                  struct ApplyCv<R(Args...), true, false> { using type = R(Args...) const; };
+                  template <typename R, typename... Args>
+                  struct ApplyCv<R(Args...), false, true> { using type = R(Args...) volatile; };
+                  template <typename R, typename... Args>
+                  struct ApplyCv<R(Args...), true, true> { using type = R(Args...) const volatile; };
+
+                  template <typename Dst, bool Const, bool Volatile>
+                  using ApplyCvT = typename ApplyCv<Dst, Const, Volatile>::type;
+
+                  template <class Class, class Fn>
+                  struct AddClass { using type = Fn Class::*; };
+
+                  template <class Class, class Fn>
+                  using AddClassT = typename AddClass<std::remove_cvref_t<Class>, Fn>::type;
+              }
+
+              #ifdef __clang__
+              # define AL_INTERNAL_LINKAGE __attribute__((internal_linkage))
+              #else
+              # define AL_INTERNAL_LINKAGE
+              #endif
+
+              #define AL_CONCAT_IMPL(a, b) a##b
+              #define AL_CONCAT(a, b) AL_CONCAT_IMPL(a, b)
+              #define AL_UNIQ_NAME(sfx) AL_CONCAT(AL_CONCAT(AL_CONCAT(_al_ev_fn_, sfx), __COUNTER__), __LINE__)
+
+              #define AL_GET_FNTYPE(ret, params, uniq_name) \
+                  decltype([] { \
+                      ret uniq_name params noexcept(false); \
+                      return &uniq_name; \
+                  }())
+
+              #define AL_GET_MEMBERFNTYPE(Class, ret, params, quals, uniq_name) \
+                  async_load_event_detail::AddClassT<Class, \
+                      async_load_event_detail::ApplyCvT< \
+                          std::remove_pointer_t<AL_GET_FNTYPE(ret, params, uniq_name)>, \
+                          std::is_const_v<int quals>, \
+                          std::is_volatile_v<int quals> \
+                      > \
+                  >
+
+              #define AL_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID) \
+                  AL_INTERNAL_LINKAGE inline ret (name) params quals { \
+                      using FnType = AL_GET_MEMBERFNTYPE(Class, ret, params, quals, AL_UNIQ_NAME(name)); \
+                      static auto storage = geode::geode_internal::callEventExportListener<FnType>(eventID); \
+                      if (!storage) return geode::geode_internal::getValueOnFailed<ret>(); \
+                      return storage args; \
+                  }
+
+              #define AL_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID) \
+                  ret name params quals; \
+                  static inline bool AL_UNIQ_NAME(_geode_event_export_reg_) \
+                  = geode::geode_internal::getEventExportListener(static_cast< \
+                      AL_GET_MEMBERFNTYPE(Class, ret, params, quals, AL_UNIQ_NAME(name)) \
+                  >(&Class::name), eventID);
+              #endif
+
               #undef AL_EXPORT_MEMBER_QUALS
               #undef AL_EXPORT_MEMBER_QUALS_6
               #undef AL_EXPORT_MEMBER_QUALS_7
               #undef AL_EXPORT_MEMBER_QUALS_PICK
-              #ifdef GEODE_EVENT_EXPORT_MEMBER_QUALS
+              #if defined(GEODE_EVENT_EXPORT_MEMBER_QUALS) && defined(GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS)
               # define AL_EXPORT_MEMBER_QUALS(...) GEODE_EVENT_EXPORT_MEMBER_QUALS(__VA_ARGS__)
               #else
               # ifdef GEODE_DEFINE_EVENT_EXPORTS
               #  define AL_EXPORT_MEMBER_QUALS_6(Class, ret, name, params, quals, args) \
-                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+                  AL_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
               #  define AL_EXPORT_MEMBER_QUALS_7(Class, ret, name, params, quals, args, eventID) \
-                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID)
+                  AL_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID)
               # else
               #  define AL_EXPORT_MEMBER_QUALS_6(Class, ret, name, params, quals, args) \
-                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+                  AL_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
               #  define AL_EXPORT_MEMBER_QUALS_7(Class, ret, name, params, quals, args, eventID) \
-                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID)
+                  AL_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID)
               # endif
               # define AL_EXPORT_MEMBER_QUALS_PICK(_1, _2, _3, _4, _5, _6, _7, NAME, ...) NAME
               # define AL_EXPORT_MEMBER_QUALS(...) \
@@ -101,19 +173,19 @@ jobs:
               #undef AL_EXPORT_MEMBER_CONST_5
               #undef AL_EXPORT_MEMBER_CONST_6
               #undef AL_EXPORT_MEMBER_CONST_PICK
-              #ifdef GEODE_EVENT_EXPORT_MEMBER_CONST
+              #if defined(GEODE_EVENT_EXPORT_MEMBER_CONST) && defined(GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS)
               # define AL_EXPORT_MEMBER_CONST(...) GEODE_EVENT_EXPORT_MEMBER_CONST(__VA_ARGS__)
               #else
               # ifdef GEODE_DEFINE_EVENT_EXPORTS
               #  define AL_EXPORT_MEMBER_CONST_5(Class, ret, name, params, args) \
-                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, const, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+                  AL_DEFINE_MEMBER_QUALS(Class, ret, name, params, const, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
               #  define AL_EXPORT_MEMBER_CONST_6(Class, ret, name, params, args, eventID) \
-                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, const, args, eventID)
+                  AL_DEFINE_MEMBER_QUALS(Class, ret, name, params, const, args, eventID)
               # else
               #  define AL_EXPORT_MEMBER_CONST_5(Class, ret, name, params, args) \
-                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, const, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+                  AL_CALL_MEMBER_QUALS(Class, ret, name, params, const, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
               #  define AL_EXPORT_MEMBER_CONST_6(Class, ret, name, params, args, eventID) \
-                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, const, args, eventID)
+                  AL_CALL_MEMBER_QUALS(Class, ret, name, params, const, args, eventID)
               # endif
               # define AL_EXPORT_MEMBER_CONST_PICK(_1, _2, _3, _4, _5, _6, NAME, ...) NAME
               # define AL_EXPORT_MEMBER_CONST(...) \
