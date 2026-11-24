@@ -392,7 +392,7 @@ def main(build: Build):
         "required": False
     })
     build.add_geode_dep("dankmeme.argon", ">=v2.0.0-alpha.1")
-   # build.add_geode_dep("dankmeme.async-load-api", ">=v1.0.0")
+    build.add_geode_dep("dankmeme.async-load-api", ">=v1.0.0")
 
     if 'scripting-ui' in gc.modules:
         build.add_geode_dep("alphalaneous.editortab_api", ">=2.1.0")
