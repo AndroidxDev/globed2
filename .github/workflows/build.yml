@@ -11,8 +11,78 @@ on:
 
   # pull_request:
 
+env:
+  GEODE_SDK_VERSION: 'v6.0.0-beta.3'
+
 jobs:
+  build-async-load:
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Windows
+            os: windows-latest
+            build-config: RelWithDebInfo
+
+          - name: macOS
+            os: macos-latest
+
+          - name: iOS
+            os: macos-latest
+            target: iOS
+
+          - name: Android32
+            os: ubuntu-latest
+            target: Android32
+
+          - name: Android64
+            os: ubuntu-latest
+            target: Android64
+
+    name: AsyncLoadAPI (${{ matrix.config.name }})
+    runs-on: ${{ matrix.config.os }}
+
+    steps:
+      - name: Checkout AsyncLoadAPI
+        uses: actions/checkout@v6
+        with:
+          repository: dankmeme01/AsyncLoadAPI
+
+      - name: Sync Geode SDK version
+        shell: bash
+        run: |
+          if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
+          $PY -c "
+          import os, pathlib, re
+          ver = os.environ['GEODE_SDK_VERSION'].lstrip('v')
+          for name in ('mod.json', 'mod.json.template'):
+              p = pathlib.Path(name)
+              if p.exists():
+                  text = p.read_text(encoding='utf-8')
+                  new_text = re.sub(r'(\"geode\"\s*:\s*\")[^\"]*(\")', rf'\g<1>{ver}\g<2>', text, count=1)
+                  if new_text != text:
+                      p.write_text(new_text, encoding='utf-8')
+                      print(f'Updated {name} geode -> {ver}')
+          "
+
+      - name: Build AsyncLoadAPI
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: ${{ env.GEODE_SDK_VERSION }}
+          build-config: ${{ matrix.config.build-config || 'Release' }}
+          combine: false
+          target: ${{ matrix.config.target }}
+          ccache-variant: ${{ matrix.config.os != 'macos-latest' && 'sccache' || '' }}
+
+      - name: Upload AsyncLoadAPI artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: async-load-api-${{ matrix.config.name }}
+          path: build/**/*.geode
+          if-no-files-found: error
+
   build:
+    needs: build-async-load
     strategy:
       fail-fast: false
       matrix:
@@ -43,13 +113,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: Download AsyncLoadAPI artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: async-load-api-${{ matrix.config.name }}
+          path: async-load-artifact
+
+      - name: Unpack AsyncLoadAPI into geode-deps
+        shell: bash
+        run: |
+          if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
+          $PY -c "
+          import glob, pathlib, zipfile
+          files = glob.glob('async-load-artifact/**/*.geode', recursive=True)
+          assert files, 'AsyncLoadAPI .geode artifact not found'
+          out = pathlib.Path('build/geode-deps/dankmeme.async-load-api')
+          out.mkdir(parents=True, exist_ok=True)
+          with zipfile.ZipFile(files[0], 'r') as zf:
+              zf.extractall(out)
+          print('Extracted', files[0], '->', out)
+          "
+
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
         env:
           GLOBED_SENTRY_URL: ${{ vars.GLOBED_SENTRY_URL }}
           GLOBED_SENTRY_KEY: ${{ vars.GLOBED_SENTRY_KEY }}
         with:
-          sdk: 'latest'
+          sdk: ${{ env.GEODE_SDK_VERSION }}
           build-config: ${{ matrix.config.build-config || 'Release' }}
           configure-args: '-DGLOBED_RELEASE=ON'
           export-pdb: true
