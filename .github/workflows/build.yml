@@ -24,13 +24,6 @@ jobs:
             os: windows-latest
             build-config: RelWithDebInfo
 
-          - name: macOS
-            os: macos-latest
-
-          - name: iOS
-            os: macos-latest
-            target: iOS
-
           - name: Android32
             os: ubuntu-latest
             target: Android32
@@ -204,7 +197,7 @@ jobs:
           build-config: ${{ matrix.config.build-config || 'Release' }}
           combine: false
           target: ${{ matrix.config.target }}
-          ccache-variant: ${{ matrix.config.os != 'macos-latest' && 'sccache' || '' }}
+          ccache-variant: 'sccache'
 
       - name: Upload AsyncLoadAPI artifact
         uses: actions/upload-artifact@v6
@@ -222,13 +215,6 @@ jobs:
           - name: Windows
             os: windows-latest
             build-config: RelWithDebInfo
-
-          - name: macOS
-            os: macos-latest
-
-          - name: iOS
-            os: macos-latest
-            target: iOS
 
           - name: Android32
             os: ubuntu-latest
@@ -279,8 +265,7 @@ jobs:
           export-symbols: true
           combine: true
           target: ${{ matrix.config.target }}
-          # sccache is broken on macos, so use no cache there :(
-          ccache-variant: ${{ matrix.config.os != 'macos-latest' && 'sccache' || '' }}
+          ccache-variant: 'sccache'
 
   package:
     name: Package builds
