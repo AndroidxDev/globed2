@@ -48,22 +48,82 @@ jobs:
         with:
           repository: dankmeme01/AsyncLoadAPI
 
-      - name: Sync Geode SDK version
+      - name: Patch AsyncLoadAPI for Geode beta.3
         shell: bash
         run: |
           if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
-          $PY -c "
-          import os, pathlib, re
+          $PY - << 'EOF'
+          import os, pathlib, re, textwrap
+
           ver = os.environ['GEODE_SDK_VERSION'].lstrip('v')
           for name in ('mod.json', 'mod.json.template'):
               p = pathlib.Path(name)
               if p.exists():
                   text = p.read_text(encoding='utf-8')
-                  new_text = re.sub(r'(\"geode\"\s*:\s*\")[^\"]*(\")', rf'\g<1>{ver}\g<2>', text, count=1)
+                  new_text = re.sub(r'("geode"\s*:\s*")[^"]*(")', rf'\g<1>{ver}\g<2>', text, count=1)
                   if new_text != text:
                       p.write_text(new_text, encoding='utf-8')
                       print(f'Updated {name} geode -> {ver}')
-          "
+
+          ev = pathlib.Path('include/AsyncLoad/util/EventDefine.hpp')
+          src = ev.read_text(encoding='utf-8').replace('\r\n', '\n')
+          old = (
+              '#define AL_EXPORT_MEMBER_QUALS(...) GEODE_EVENT_EXPORT_MEMBER_QUALS(__VA_ARGS__)\n'
+              '#define AL_EXPORT_MEMBER_CONST(...) GEODE_EVENT_EXPORT_MEMBER_CONST(__VA_ARGS__)'
+          )
+          assert old in src, 'Expected AL_EXPORT_MEMBER macros not found in EventDefine.hpp'
+
+          new = textwrap.dedent(r"""
+              #undef AL_EXPORT_MEMBER_QUALS
+              #undef AL_EXPORT_MEMBER_QUALS_6
+              #undef AL_EXPORT_MEMBER_QUALS_7
+              #undef AL_EXPORT_MEMBER_QUALS_PICK
+              #ifdef GEODE_EVENT_EXPORT_MEMBER_QUALS
+              # define AL_EXPORT_MEMBER_QUALS(...) GEODE_EVENT_EXPORT_MEMBER_QUALS(__VA_ARGS__)
+              #else
+              # ifdef GEODE_DEFINE_EVENT_EXPORTS
+              #  define AL_EXPORT_MEMBER_QUALS_6(Class, ret, name, params, quals, args) \
+                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+              #  define AL_EXPORT_MEMBER_QUALS_7(Class, ret, name, params, quals, args, eventID) \
+                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID)
+              # else
+              #  define AL_EXPORT_MEMBER_QUALS_6(Class, ret, name, params, quals, args) \
+                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+              #  define AL_EXPORT_MEMBER_QUALS_7(Class, ret, name, params, quals, args, eventID) \
+                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, quals, args, eventID)
+              # endif
+              # define AL_EXPORT_MEMBER_QUALS_PICK(_1, _2, _3, _4, _5, _6, _7, NAME, ...) NAME
+              # define AL_EXPORT_MEMBER_QUALS(...) \
+                  AL_EXPORT_MEMBER_QUALS_PICK(__VA_ARGS__, AL_EXPORT_MEMBER_QUALS_7, AL_EXPORT_MEMBER_QUALS_6)(__VA_ARGS__)
+              #endif
+
+              #undef AL_EXPORT_MEMBER_CONST
+              #undef AL_EXPORT_MEMBER_CONST_5
+              #undef AL_EXPORT_MEMBER_CONST_6
+              #undef AL_EXPORT_MEMBER_CONST_PICK
+              #ifdef GEODE_EVENT_EXPORT_MEMBER_CONST
+              # define AL_EXPORT_MEMBER_CONST(...) GEODE_EVENT_EXPORT_MEMBER_CONST(__VA_ARGS__)
+              #else
+              # ifdef GEODE_DEFINE_EVENT_EXPORTS
+              #  define AL_EXPORT_MEMBER_CONST_5(Class, ret, name, params, args) \
+                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, const, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+              #  define AL_EXPORT_MEMBER_CONST_6(Class, ret, name, params, args, eventID) \
+                  GEODE_EVENT_EXPORT_DEFINE_MEMBER_QUALS(Class, ret, name, params, const, args, eventID)
+              # else
+              #  define AL_EXPORT_MEMBER_CONST_5(Class, ret, name, params, args) \
+                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, const, args, GEODE_EVENT_EXPORT_ID_FOR(#Class "::" #name, #args))
+              #  define AL_EXPORT_MEMBER_CONST_6(Class, ret, name, params, args, eventID) \
+                  GEODE_EVENT_EXPORT_CALL_MEMBER_QUALS(Class, ret, name, params, const, args, eventID)
+              # endif
+              # define AL_EXPORT_MEMBER_CONST_PICK(_1, _2, _3, _4, _5, _6, NAME, ...) NAME
+              # define AL_EXPORT_MEMBER_CONST(...) \
+                  AL_EXPORT_MEMBER_CONST_PICK(__VA_ARGS__, AL_EXPORT_MEMBER_CONST_6, AL_EXPORT_MEMBER_CONST_5)(__VA_ARGS__)
+              #endif
+          """).strip()
+
+          ev.write_text(src.replace(old, new, 1), encoding='utf-8')
+          print('Patched', ev)
+          EOF
 
       - name: Build AsyncLoadAPI
         uses: geode-sdk/build-geode-mod@main
@@ -123,7 +183,7 @@ jobs:
         shell: bash
         run: |
           if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
-          $PY -c "
+          $PY - << 'EOF'
           import glob, pathlib, zipfile
           files = glob.glob('async-load-artifact/**/*.geode', recursive=True)
           assert files, 'AsyncLoadAPI .geode artifact not found'
@@ -132,7 +192,7 @@ jobs:
           with zipfile.ZipFile(files[0], 'r') as zf:
               zf.extractall(out)
           print('Extracted', files[0], '->', out)
-          "
+          EOF
 
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
