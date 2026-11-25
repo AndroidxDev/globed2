@@ -248,14 +248,15 @@ jobs:
         run: |
           if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
           $PY - << 'EOF'
-          import os, pathlib, re
+          import os, pathlib, re, textwrap
 
           matches = list(pathlib.Path('async-load-artifact').rglob('AsyncLoad/Manager.hpp'))
           assert matches, 'AsyncLoad headers not found in artifact'
           inc_dir = matches[0].parent.parent.resolve()
 
           ext = '*.lib' if os.name == 'nt' else '*.so'
-          libs = list(pathlib.Path('async-load-artifact').rglob(ext))
+          all_libs = list(pathlib.Path('async-load-artifact').rglob(ext))
+          libs = [p for p in all_libs if 'async-load' in p.name.lower()] or all_libs
           assert libs, f'AsyncLoad library ({ext}) not found in artifact'
           lib_path = libs[0].resolve()
 
@@ -280,19 +281,26 @@ jobs:
           target_line = 'include("${CMAKE_CURRENT_BINARY_DIR}/geobuild-gen.cmake")'
           assert target_line in cm_text, 'include(geobuild-gen.cmake) not found in CMakeLists.txt'
 
-          patch = f'''
-          file(READ "${{CMAKE_CURRENT_BINARY_DIR}}/geobuild-gen.cmake" _gb_gen)
-          string(REGEX REPLACE "setup_geode_mod\\\\(([^)]*)\\\\)" "setup_geode_mod(\\\\1 EXTERNALS dankmeme.async-load-api:>=1.0.0)" _gb_gen "${{_gb_gen}}")
-          file(WRITE "${{CMAKE_CURRENT_BINARY_DIR}}/geobuild-gen.cmake" "${{_gb_gen}}")
-          {target_line}
-          target_include_directories(${{PROJECT_NAME}} PUBLIC "{inc_dir.as_posix()}")
-          target_link_libraries(${{PROJECT_NAME}} PRIVATE "{lib_path.as_posix()}")
-          if (WIN32)
-              file(WRITE "${{CMAKE_CURRENT_BINARY_DIR}}/win_appdelegate_fix.cpp" "#include <Geode/Geode.hpp>\\n#include <Geode/binding/AppDelegate.hpp>\\nAppDelegate::~AppDelegate() {{}}\\n")
-              set_source_files_properties("${{CMAKE_CURRENT_BINARY_DIR}}/win_appdelegate_fix.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON SKIP_PRECOMPILE_HEADERS ON)
-              target_sources(${{PROJECT_NAME}} PRIVATE "${{CMAKE_CURRENT_BINARY_DIR}}/win_appdelegate_fix.cpp")
-          endif()
-          '''.strip()
+          patch = textwrap.dedent(r'''
+              file(READ "${CMAKE_CURRENT_BINARY_DIR}/geobuild-gen.cmake" _gb_gen)
+              string(REGEX REPLACE "setup_geode_mod\\(([^)]*)\\)" "setup_geode_mod(\\1 EXTERNALS dankmeme.async-load-api:>=1.0.0)" _gb_gen "${_gb_gen}")
+              file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/geobuild-gen.cmake" "${_gb_gen}")
+              __TARGET_LINE__
+              target_include_directories(${PROJECT_NAME} PUBLIC "__INC_DIR__")
+              target_link_libraries(${PROJECT_NAME} PRIVATE "__LIB_PATH__")
+              if (WIN32)
+                  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/win_appdelegate_fix.cpp" "#include <Geode/Geode.hpp>\n#include <Geode/binding/AppDelegate.hpp>\nAppDelegate::~AppDelegate() {}\n")
+                  set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/win_appdelegate_fix.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON SKIP_PRECOMPILE_HEADERS ON)
+                  target_sources(${PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/win_appdelegate_fix.cpp")
+              endif()
+          ''').strip()
+
+          patch = (
+              patch
+              .replace('__TARGET_LINE__', target_line)
+              .replace('__INC_DIR__', inc_dir.as_posix())
+              .replace('__LIB_PATH__', lib_path.as_posix())
+          )
 
           cm.write_text(cm_text.replace(target_line, patch, 1), encoding='utf-8')
           print('AsyncLoadAPI include:', inc_dir)
