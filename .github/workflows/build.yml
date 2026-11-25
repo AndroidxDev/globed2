@@ -204,7 +204,11 @@ jobs:
         with:
           name: async-load-api-${{ matrix.config.name }}
           path: |
-            build/**/*.geode
+            build/*.geode
+            build/*.lib
+            build/*.so
+            build/RelWithDebInfo/*.lib
+            build/Release/*.lib
             include/**
           if-no-files-found: error
 
@@ -239,28 +243,60 @@ jobs:
           name: async-load-api-${{ matrix.config.name }}
           path: async-load-artifact
 
-      - name: Configure AsyncLoadAPI headers
+      - name: Configure AsyncLoadAPI and Windows linker fix
         shell: bash
         run: |
           if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
           $PY - << 'EOF'
-          import pathlib, re
+          import os, pathlib, re
 
           matches = list(pathlib.Path('async-load-artifact').rglob('AsyncLoad/Manager.hpp'))
           assert matches, 'AsyncLoad headers not found in artifact'
           inc_dir = matches[0].parent.parent.resolve()
 
+          ext = '*.lib' if os.name == 'nt' else '*.so'
+          libs = list(pathlib.Path('async-load-artifact').rglob(ext))
+          assert libs, f'AsyncLoad library ({ext}) not found in artifact'
+          lib_path = libs[0].resolve()
+
           gb = pathlib.Path('geobuild.py')
-          text = gb.read_text(encoding='utf-8').replace('\r\n', '\n')
-          text, n = re.subn(
-              r'^[ \t]*#?[ \t]*build\.add_geode_dep\(\s*"dankmeme\.async-load-api".*\)$',
-              f'    build.add_include_dir(Path("{inc_dir.as_posix()}"), Privacy.PUBLIC)',
-              text,
+          gb_text = gb.read_text(encoding='utf-8').replace('\r\n', '\n')
+          gb_text = re.sub(
+              r'^([ \t]*)#[ \t]*(build\.add_geode_dep\(\s*"dankmeme\.async-load-api".*\))$',
+              r'\1\2',
+              gb_text,
               flags=re.MULTILINE,
           )
-          assert n == 1, f'Expected 1 async-load-api line in geobuild.py, found {n}'
-          gb.write_text(text, encoding='utf-8')
-          print('Injected AsyncLoadAPI include dir:', inc_dir)
+          if '"dankmeme.async-load-api"' not in gb_text:
+              gb_text = gb_text.replace(
+                  'build.add_geode_dep("dankmeme.argon", ">=v2.0.0-alpha.1")',
+                  'build.add_geode_dep("dankmeme.argon", ">=v2.0.0-alpha.1")\n    build.add_geode_dep("dankmeme.async-load-api", ">=v1.0.0")',
+                  1,
+              )
+          gb.write_text(gb_text, encoding='utf-8')
+
+          cm = pathlib.Path('CMakeLists.txt')
+          cm_text = cm.read_text(encoding='utf-8').replace('\r\n', '\n')
+          target_line = 'include("${CMAKE_CURRENT_BINARY_DIR}/geobuild-gen.cmake")'
+          assert target_line in cm_text, 'include(geobuild-gen.cmake) not found in CMakeLists.txt'
+
+          patch = f'''
+          file(READ "${{CMAKE_CURRENT_BINARY_DIR}}/geobuild-gen.cmake" _gb_gen)
+          string(REGEX REPLACE "setup_geode_mod\\\\(([^)]*)\\\\)" "setup_geode_mod(\\\\1 EXTERNALS dankmeme.async-load-api:>=1.0.0)" _gb_gen "${{_gb_gen}}")
+          file(WRITE "${{CMAKE_CURRENT_BINARY_DIR}}/geobuild-gen.cmake" "${{_gb_gen}}")
+          {target_line}
+          target_include_directories(${{PROJECT_NAME}} PUBLIC "{inc_dir.as_posix()}")
+          target_link_libraries(${{PROJECT_NAME}} PRIVATE "{lib_path.as_posix()}")
+          if (WIN32)
+              file(WRITE "${{CMAKE_CURRENT_BINARY_DIR}}/win_appdelegate_fix.cpp" "#include <Geode/Geode.hpp>\\n#include <Geode/binding/AppDelegate.hpp>\\nAppDelegate::~AppDelegate() {{}}\\n")
+              set_source_files_properties("${{CMAKE_CURRENT_BINARY_DIR}}/win_appdelegate_fix.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON SKIP_PRECOMPILE_HEADERS ON)
+              target_sources(${{PROJECT_NAME}} PRIVATE "${{CMAKE_CURRENT_BINARY_DIR}}/win_appdelegate_fix.cpp")
+          endif()
+          '''.strip()
+
+          cm.write_text(cm_text.replace(target_line, patch, 1), encoding='utf-8')
+          print('AsyncLoadAPI include:', inc_dir)
+          print('AsyncLoadAPI library:', lib_path)
           EOF
 
       - name: Build the mod
