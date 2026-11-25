@@ -12,7 +12,7 @@ on:
   # pull_request:
 
 env:
-  GEODE_SDK_VERSION: 'v6.0.0-beta.3'
+  GEODE_SDK_VERSION: 'v6.0.0'
 
 jobs:
   build-async-load:
