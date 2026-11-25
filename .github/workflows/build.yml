@@ -283,7 +283,7 @@ jobs:
 
           patch = textwrap.dedent(r'''
               file(READ "${CMAKE_CURRENT_BINARY_DIR}/geobuild-gen.cmake" _gb_gen)
-              string(REGEX REPLACE "setup_geode_mod\\(([^)]*)\\)" "setup_geode_mod(\\1 EXTERNALS dankmeme.async-load-api:>=1.0.0)" _gb_gen "${_gb_gen}")
+              string(REGEX REPLACE "setup_geode_mod\\(([^)]*)\\)" "setup_geode_mod(\\1 EXTERNALS dankmeme.async-load-api:1.0.0)" _gb_gen "${_gb_gen}")
               file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/geobuild-gen.cmake" "${_gb_gen}")
               __TARGET_LINE__
               target_include_directories(${PROJECT_NAME} PUBLIC "__INC_DIR__")
