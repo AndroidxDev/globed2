@@ -203,7 +203,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: async-load-api-${{ matrix.config.name }}
-          path: build/**/*.geode
+          path: |
+            build/**/*.geode
+            include/**
           if-no-files-found: error
 
   build:
@@ -237,19 +239,28 @@ jobs:
           name: async-load-api-${{ matrix.config.name }}
           path: async-load-artifact
 
-      - name: Unpack AsyncLoadAPI into geode-deps
+      - name: Configure AsyncLoadAPI headers
         shell: bash
         run: |
           if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
           $PY - << 'EOF'
-          import glob, pathlib, zipfile
-          files = glob.glob('async-load-artifact/**/*.geode', recursive=True)
-          assert files, 'AsyncLoadAPI .geode artifact not found'
-          out = pathlib.Path('build/geode-deps/dankmeme.async-load-api')
-          out.mkdir(parents=True, exist_ok=True)
-          with zipfile.ZipFile(files[0], 'r') as zf:
-              zf.extractall(out)
-          print('Extracted', files[0], '->', out)
+          import pathlib, re
+
+          matches = list(pathlib.Path('async-load-artifact').rglob('AsyncLoad/Manager.hpp'))
+          assert matches, 'AsyncLoad headers not found in artifact'
+          inc_dir = matches[0].parent.parent.resolve()
+
+          gb = pathlib.Path('geobuild.py')
+          text = gb.read_text(encoding='utf-8').replace('\r\n', '\n')
+          text, n = re.subn(
+              r'^[ \t]*#?[ \t]*build\.add_geode_dep\(\s*"dankmeme\.async-load-api".*\)$',
+              f'    build.add_include_dir(Path("{inc_dir.as_posix()}"), Privacy.PUBLIC)',
+              text,
+              flags=re.MULTILINE,
+          )
+          assert n == 1, f'Expected 1 async-load-api line in geobuild.py, found {n}'
+          gb.write_text(text, encoding='utf-8')
+          print('Injected AsyncLoadAPI include dir:', inc_dir)
           EOF
 
       - name: Build the mod
