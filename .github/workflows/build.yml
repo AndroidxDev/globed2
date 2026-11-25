@@ -199,17 +199,40 @@ jobs:
           target: ${{ matrix.config.target }}
           ccache-variant: 'sccache'
 
+      - name: Stage AsyncLoadAPI artifact
+        shell: bash
+        run: |
+          if python --version >/dev/null 2>&1; then PY=python; else PY=python3; fi
+          $PY - << 'EOF'
+          import pathlib, shutil
+
+          dist = pathlib.Path('dist')
+          if dist.exists():
+              shutil.rmtree(dist)
+          (dist / 'lib').mkdir(parents=True)
+          (dist / 'pkg').mkdir(parents=True)
+
+          shutil.copytree('include', dist / 'include')
+
+          geodes = list(pathlib.Path('build').rglob('*.geode'))
+          assert geodes, 'No .geode file found in build/'
+          shutil.copy2(geodes[0], dist / 'pkg' / 'dankmeme.async-load-api.pkg')
+
+          for pat in ('*.lib', '*.so'):
+              for f in pathlib.Path('build').glob(pat):
+                  shutil.copy2(f, dist / 'lib' / f.name)
+              for sub in ('RelWithDebInfo', 'Release'):
+                  p = pathlib.Path('build') / sub
+                  if p.exists():
+                      for f in p.glob(pat):
+                          shutil.copy2(f, dist / 'lib' / f.name)
+          EOF
+
       - name: Upload AsyncLoadAPI artifact
         uses: actions/upload-artifact@v6
         with:
           name: async-load-api-${{ matrix.config.name }}
-          path: |
-            build/*.geode
-            build/*.lib
-            build/*.so
-            build/RelWithDebInfo/*.lib
-            build/Release/*.lib
-            include/**
+          path: dist
           if-no-files-found: error
 
   build:
@@ -335,6 +358,36 @@ jobs:
           zstd: true
           optimize-pngs: true
         id: build
+
+      - name: Download AsyncLoadAPI packages
+        uses: actions/download-artifact@v6
+        with:
+          pattern: async-load-api-*
+          path: async-load-pkgs
+
+      - name: Package combined AsyncLoadAPI
+        shell: bash
+        env:
+          OUT_DIR: ${{ steps.build.outputs.build-output }}
+        run: |
+          python3 - << 'EOF'
+          import os, pathlib, zipfile
+
+          pkgs = sorted(pathlib.Path('async-load-pkgs').rglob('*.pkg'))
+          assert pkgs, 'No AsyncLoadAPI .pkg files found'
+
+          out_path = pathlib.Path(os.environ['OUT_DIR']) / 'dankmeme.async-load-api.geode'
+          seen = set()
+          with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_DEFLATED) as dst:
+              for pkg in pkgs:
+                  with zipfile.ZipFile(pkg, 'r') as src:
+                      for info in src.infolist():
+                          if info.filename in seen:
+                              continue
+                          seen.add(info.filename)
+                          dst.writestr(info, src.read(info.filename))
+          print(f'Merged {len(pkgs)} packages into {out_path}')
+          EOF
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v6
